@@ -391,13 +391,13 @@ input[type="range"]:disabled { cursor: default; }
 
   <section class="card" aria-labelledby="meterTitle">
     <div class="card-head">
-      <h2 class="card-title" id="meterTitle">Kick drum band</h2>
-      <span class="card-note">40&ndash;150 Hz <span class="badge" id="exampleBadge">Example</span></span>
+      <h2 class="card-title" id="meterTitle">Hit strength</h2>
+      <span class="card-note"><span id="meterBand">Deep bass and 1&ndash;4 kHz</span> <span class="badge" id="exampleBadge">Example</span></span>
     </div>
-    <canvas class="meter" id="meter" role="img" aria-label="Bass level over the last six seconds, with the trigger line and the detected beats"></canvas>
+    <canvas class="meter" id="meter" role="img" aria-label="Strength of each drum hit over the last six seconds, with the trigger line and the detected beats"></canvas>
     <div class="legend" aria-hidden="true">
-      <span class="key"><i class="sw-line"></i>Bass level</span>
-      <span class="key"><i class="sw-dash"></i>Trigger line</span>
+      <span class="key"><i class="sw-line"></i><span id="meterKey">Hit strength</span></span>
+      <span class="key"><i class="sw-dash"></i><span id="meterLine">Trigger line</span></span>
       <span class="key"><i class="sw-dot"></i>Beat</span>
     </div>
   </section>
@@ -411,7 +411,7 @@ input[type="range"]:disabled { cursor: default; }
         <button type="button" role="radio" id="modeBeat" aria-checked="true">On the beat</button>
         <button type="button" role="radio" id="modeFollow" aria-checked="false">Follow the bass</button>
       </div>
-      <p class="hint" id="modeHint">A short flash on each kick drum.</p>
+      <p class="hint" id="modeHint">A short flash on each drum hit.</p>
     </div>
 
     <div class="field">
@@ -442,6 +442,7 @@ input[type="range"]:disabled { cursor: default; }
     <h2 class="card-title" id="tipsTitle">Tips</h2>
     <ul>
       <li>Play the music from a speaker, TV or live band in the room. Music playing on this same iPhone may pause when the microphone turns on.</li>
+      <li>Laptop speakers work too, but they have little bass. Keep this phone close to them and turn the volume up.</li>
       <li>Keep this page open with the screen unlocked. iOS turns the light off when you lock the phone or switch apps.</li>
       <li>Nothing is recorded or uploaded. The camera is only used to switch the flashlight.</li>
       <li>Fast flashing light can trigger seizures in people with photosensitive epilepsy.</li>
@@ -457,28 +458,25 @@ input[type="range"]:disabled { cursor: default; }
   'use strict';
 
   /* detector:start */
-  const RELEASE_MS = 90;    // how quickly the bass envelope falls after a hit
-  const HISTORY_MS = 1000;  // window for the running average
+  const HISTORY_MS = 1000;  // window for the running averages
+  const RELEASE_MS = 90;    // how quickly a band's level falls after a hit
   const ONSET_MS = 70;      // a hit must jump up within this time
   const MIN_GAP_MS = 150;   // closest two beats can be (400 BPM)
 
-  function createDetector() {
-    return { env: 0, prevE: 0, floor: 0, hist: [], lastBeat: -1e9, armed: true, follow: false };
+  function createBand() {
+    return { env: 0, prevE: 0, floor: 0, hist: [], lastBeat: -1e9, armed: true };
   }
 
-  // One analysis step. raw is the RMS level of the 40 to 150 Hz band; sens runs from 0 to 1.
-  function detectStep(d, raw, now, dt, sens) {
+  // Watches one frequency band for sudden jumps in level. raw is the band's RMS level.
+  function bandStep(d, raw, now, dt, sens) {
     d.env = Math.max(raw, d.env * Math.exp(-dt / RELEASE_MS));
     const e = d.env;
-    // Noise floor: drops straight to quiet moments and creeps back up by about 25% a second.
+    // Quietest recent level: drops straight to quiet moments and creeps back up by about 25% a second.
     d.floor = d.floor > 0 ? Math.min(e, d.floor * (1 + 0.25 * dt / 1000)) : e;
-
     const h = d.hist;
     while (h.length && now - h[0].t > HISTORY_MS) h.shift();
     const warm = h.length >= 8;
-    let mean = e;
-    let sd = 0;
-    let valley = e;
+    let mean = e, sd = 0, valley = e;
     if (warm) {
       let sum = 0;
       for (let i = 0; i < h.length; i++) sum += h[i].e;
@@ -489,27 +487,63 @@ input[type="range"]:disabled { cursor: default; }
       for (let i = h.length - 1; i >= 0 && now - h[i].t <= ONSET_MS; i--) if (h[i].e < valley) valley = h[i].e;
     }
     h.push({ t: now, e });
-
-    const k = 2.6 - 1.6 * sens;                           // how far above the average a hit must rise
-    const quiet = 0.012 * Math.pow(1 / 6, sens);          // below this the room counts as silent
-    const gate = Math.max(quiet, d.floor * 1.6);
-    const thr = Math.max(gate, mean + k * sd, mean * (1.25 + 0.35 * (1 - sens)));
-    const onThr = Math.max(gate, mean + 0.6 * k * sd, mean * 1.15);
-    const sharp = e >= valley * (1.5 - 0.25 * sens);      // a kick jumps up; a swelling bass note does not
-
+    const k = 2.6 - 1.6 * sens;                                  // how far above the average a hit must rise
+    const thr = Math.max(d.floor * 1.6, mean + k * sd, mean * (1.25 + 0.35 * (1 - sens)));
+    const sharp = e >= valley * (1.5 - 0.25 * sens);             // a drum hit jumps up; a swelling note does not
     if (!d.armed && (e < thr * 0.85 || now - d.lastBeat > 400)) d.armed = true;
-    let beat = false;
+    let hit = false;
     if (warm && d.armed && sharp && e > thr && e > d.prevE && now - d.lastBeat > MIN_GAP_MS) {
-      beat = true;
+      hit = true;
       d.armed = false;
       d.lastBeat = now;
     }
     d.prevE = e;
+    return { e, thr, hit };
+  }
 
-    if (!d.follow && warm && e > onThr) d.follow = true;
-    else if (d.follow && e < onThr * 0.8) d.follow = false;
+  function createDetector() {
+    return { bass: createBand(), hi: createBand(), body: { env: 0, floor: 0, levels: [] }, follow: false, lastBeat: -1e9 };
+  }
 
-    return { e, thr, onThr, beat, follow: d.follow };
+  // One analysis step. s.bass is the 40 to 150 Hz level, s.hi the 1 to 4 kHz level, s.body the
+  // 40 Hz to 1.5 kHz level, s.levelDb the smoothed input level in dBFS, and sens runs from 0 to 1.
+  // Big speakers are caught by the deep-bass band. Laptop and phone speakers play almost no deep bass,
+  // so they are caught by the 1 to 4 kHz band, where the snap of kick and snare drums comes through.
+  function detectStep(d, s, now, dt, sens) {
+    const loud = s.levelDb > -52 - 14 * sens;                   // anything quieter counts as a silent room
+    const bassOpen = s.bass > 0.012 * Math.pow(1 / 6, sens);     // deep bass only counts when it is clearly there
+    const b = bandStep(d.bass, s.bass, now, dt, sens);
+    const h = bandStep(d.hi, s.hi, now, dt, sens);
+    let beat = false;
+    if (loud && ((b.hit && bassOpen) || h.hit) && now - d.lastBeat > MIN_GAP_MS) {
+      beat = true;
+      d.lastBeat = now;
+    }
+    // Hit strength for the meter: 1 means a band reached its trigger line.
+    const strength = Math.max(bassOpen ? b.e / b.thr : 0, h.e / h.thr);
+
+    // Follow the bass: the light stays on while the low end is loud for this song.
+    const f = d.body;
+    f.env = Math.max(s.body, f.env * Math.exp(-dt / RELEASE_MS));
+    const e = f.env;
+    f.floor = f.floor > 0 ? Math.min(e, f.floor * (1 + 0.25 * dt / 1000)) : e;
+    const lv = f.levels;
+    while (lv.length && now - lv[0].t > HISTORY_MS) lv.shift();
+    let onThr = e * 2;
+    if (lv.length >= 8) {
+      let sum = 0;
+      for (let i = 0; i < lv.length; i++) sum += lv[i].e;
+      const mean = sum / lv.length;
+      let v = 0;
+      for (let i = 0; i < lv.length; i++) { const dv = lv[i].e - mean; v += dv * dv; }
+      onThr = Math.max(f.floor * 1.6, mean + 0.6 * (2.6 - 1.6 * sens) * Math.sqrt(v / lv.length), mean * 1.15);
+    }
+    lv.push({ t: now, e });
+    const music = now - d.lastBeat < 2500;                      // a recent beat shows that music is playing
+    if (!d.follow && loud && music && lv.length > 8 && e > onThr) d.follow = true;
+    else if (d.follow && (!loud || !music || e < onThr * 0.8)) d.follow = false;
+
+    return { beat, follow: d.follow, strength, body: e / onThr };
   }
   /* detector:end */
 
@@ -519,6 +553,7 @@ input[type="range"]:disabled { cursor: default; }
     lamp: $('lamp'), flash: $('flash'), cam: $('cam'),
     tempo: $('tempo'), input: $('input'), delay: $('delay'),
     meter: $('meter'), exampleBadge: $('exampleBadge'),
+    meterTitle: $('meterTitle'), meterBand: $('meterBand'), meterKey: $('meterKey'), meterLine: $('meterLine'),
     sens: $('sens'), sensOut: $('sensOut'), len: $('len'), lenOut: $('lenOut'),
     lenField: $('lenField'), lenHint: $('lenHint'), screen: $('screenFlash'),
     modeBeat: $('modeBeat'), modeFollow: $('modeFollow'), modeHint: $('modeHint')
@@ -559,7 +594,7 @@ input[type="range"]:disabled { cursor: default; }
   let starting = false;
   let runId = 0;
   let stream = null, audioTrack = null, videoTrack = null;
-  let audioCtx = null, nodes = [], readBass = null, readFull = null;
+  let audioCtx = null, nodes = [], readers = null;
   let rafId = 0, lastFrame = 0, lastReadout = 0, manualUntil = 0;
   let wakeLock = null;
   let lightOn = false, lightTimer = 0, screenAuto = false;
@@ -568,7 +603,7 @@ input[type="range"]:disabled { cursor: default; }
   let tempoBeats = [];
   let levelDb = -200, silentSince = 0, silenceShown = false;
   const trace = [];
-  let meterScale = 0.02;
+  let meterScale = 2, meterReset = true;
   let frozen = { pts: [], now: 0 };
   const torch = { ok: false, desired: false, actual: false, busy: false, fails: 0, lag: 0 };
 
@@ -630,7 +665,14 @@ input[type="range"]:disabled { cursor: default; }
     ui.modeFollow.setAttribute('aria-checked', String(!beat));
     ui.modeBeat.tabIndex = beat ? 0 : -1;
     ui.modeFollow.tabIndex = beat ? -1 : 0;
-    ui.modeHint.textContent = beat ? 'A short flash on each kick drum.' : 'The light stays on while the bass is loud.';
+    ui.modeHint.textContent = beat ? 'A short flash on each drum hit.' : 'The light stays on while the bass is loud.';
+    ui.meterTitle.textContent = beat ? 'Hit strength' : 'Bass level';
+    ui.meterBand.textContent = beat ? 'Deep bass and 1–4 kHz' : '40 Hz–1.5 kHz';
+    ui.meterKey.textContent = beat ? 'Hit strength' : 'Bass level';
+    ui.meterLine.textContent = beat ? 'Trigger line' : 'Light-on line';
+    ui.meter.setAttribute('aria-label', beat
+      ? 'Strength of each drum hit over the last six seconds, with the trigger line and the detected beats'
+      : 'Bass level over the last six seconds, with the line the light turns on above');
     ui.len.disabled = !beat;
     ui.lenField.classList.toggle('is-off', !beat);
     ui.lenHint.textContent = beat ? 'How long each flash lasts.' : 'Not used while following the bass.';
@@ -640,6 +682,8 @@ input[type="range"]:disabled { cursor: default; }
     settings.mode = mode;
     saveSettings();
     renderMode();
+    meterReset = true;
+    if (!running && frozen.pts.length) drawMeter(frozen.pts, frozen.now, true);
     det.follow = false;
     clearTimeout(lightTimer);
     setLight(false);
@@ -749,32 +793,41 @@ input[type="range"]:disabled { cursor: default; }
       return Math.sqrt(s / n);
     };
   }
+  // One frequency band: a high-pass and a low-pass filter feeding a level meter.
+  function bandChain(src, silent, highPassHz, lowPassHz, size) {
+    const hp = audioCtx.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = highPassHz; hp.Q.value = 0.707;
+    const lp = audioCtx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = lowPassHz; lp.Q.value = 0.707;
+    const an = audioCtx.createAnalyser();
+    an.fftSize = size; an.smoothingTimeConstant = 0;
+    src.connect(hp); hp.connect(lp); lp.connect(an); an.connect(silent);
+    nodes.push(hp, lp, an);
+    return makeReader(an);
+  }
   function buildAudioGraph() {
     disconnectGraph();
     const src = audioCtx.createMediaStreamSource(new MediaStream([audioTrack]));
-    const hp = audioCtx.createBiquadFilter();
-    hp.type = 'highpass'; hp.frequency.value = 40; hp.Q.value = 0.707;
-    const lp = audioCtx.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = 150; lp.Q.value = 0.707;
-    const bass = audioCtx.createAnalyser();
-    bass.fftSize = 2048; bass.smoothingTimeConstant = 0;
-    const full = audioCtx.createAnalyser();
-    full.fftSize = 1024; full.smoothingTimeConstant = 0;
     // A silent output keeps Safari processing the analysers without playing anything.
     const silent = audioCtx.createGain();
     silent.gain.value = 0;
-    src.connect(hp); hp.connect(lp); lp.connect(bass); bass.connect(silent);
-    src.connect(full); full.connect(silent);
     silent.connect(audioCtx.destination);
-    nodes = [src, hp, lp, bass, full, silent];
-    readBass = makeReader(bass);
-    readFull = makeReader(full);
+    nodes = [src, silent];
+    const full = audioCtx.createAnalyser();
+    full.fftSize = 1024; full.smoothingTimeConstant = 0;
+    src.connect(full); full.connect(silent);
+    nodes.push(full);
+    readers = {
+      full: makeReader(full),
+      bass: bandChain(src, silent, 40, 150, 2048),
+      hi: bandChain(src, silent, 1000, 4000, 1024),
+      body: bandChain(src, silent, 40, 1500, 1024)
+    };
   }
   function disconnectGraph() {
     nodes.forEach((n) => { try { n.disconnect(); } catch (e) { /* already disconnected */ } });
     nodes = [];
-    readBass = null;
-    readFull = null;
+    readers = null;
   }
 
   /* Start and stop */
@@ -857,7 +910,7 @@ input[type="range"]:disabled { cursor: default; }
     det = createDetector();
     tempoBeats = [];
     trace.length = 0;
-    meterScale = 0.02;
+    meterReset = true;
     levelDb = -200;
     silentSince = 0;
     silenceShown = false;
@@ -920,13 +973,16 @@ input[type="range"]:disabled { cursor: default; }
     tempoBeats.push(t);
     if (tempoBeats.length > 16) tempoBeats.shift();
     if (tempoBeats.length >= 5) {
+      // Fold every gap into the 70 to 180 BPM range first, so skipped beats do not drag the tempo down.
       const iv = [];
-      for (let i = 1; i < tempoBeats.length; i++) iv.push(tempoBeats[i] - tempoBeats[i - 1]);
+      for (let i = 1; i < tempoBeats.length; i++) {
+        let gap = tempoBeats[i] - tempoBeats[i - 1];
+        while (gap > 60000 / 70) gap /= 2;
+        while (gap < 60000 / 180) gap *= 2;
+        iv.push(gap);
+      }
       iv.sort((a, b) => a - b);
-      let bpm = 60000 / iv[iv.length >> 1];
-      while (bpm < 70) bpm *= 2;
-      while (bpm > 180) bpm /= 2;
-      ui.tempo.textContent = String(Math.round(bpm));
+      ui.tempo.textContent = String(Math.round(60000 / iv[iv.length >> 1]));
     }
   }
   function fmtDb(n) { return n < 0 ? '−' + Math.abs(n) : String(n); }
@@ -937,9 +993,14 @@ input[type="range"]:disabled { cursor: default; }
     const dt = Math.min(100, Math.max(1, now - lastFrame));
     lastFrame = now;
 
-    const raw = readBass();
-    const full = readFull();
-    const r = detectStep(det, raw, now, dt, settings.sens / 100);
+    // Input level in dBFS: rises quickly and falls slowly, like a VU meter.
+    const full = readers.full();
+    const db = Math.max(-90, 20 * Math.log10(full + 1e-9));
+    levelDb = levelDb < -150 ? db : levelDb + (db - levelDb) * Math.min(1, dt / (db > levelDb ? 120 : 700));
+    if (full < 1e-6) { if (!silentSince) silentSince = now; } else silentSince = 0;
+
+    const s = { bass: readers.bass(), hi: readers.hi(), body: readers.body(), levelDb };
+    const r = detectStep(det, s, now, dt, settings.sens / 100);
     if (r.beat) noteBeat(now);
 
     if (now >= manualUntil) {
@@ -947,15 +1008,11 @@ input[type="range"]:disabled { cursor: default; }
       else setLight(r.follow);
     }
 
-    trace.push({ t: now, e: r.e, thr: settings.mode === 'beat' ? r.thr : r.onThr, beat: r.beat });
+    trace.push({ t: now, v: r.strength, f: r.body, beat: r.beat });
     while (trace.length && now - trace[0].t > TRACE_MS) trace.shift();
     drawMeter(trace, now, false);
-    ui.lamp.style.setProperty('--lvl', Math.min(1, r.e / Math.max(meterScale, 1e-6)).toFixed(3));
-
-    // Input level in dBFS: rises quickly and falls slowly, like a VU meter.
-    const db = Math.max(-90, 20 * Math.log10(full + 1e-9));
-    levelDb = levelDb < -150 ? db : levelDb + (db - levelDb) * Math.min(1, dt / (db > levelDb ? 120 : 700));
-    if (full < 1e-6) { if (!silentSince) silentSince = now; } else silentSince = 0;
+    const shown = settings.mode === 'beat' ? r.strength : r.body;
+    ui.lamp.style.setProperty('--lvl', Math.min(1, shown / Math.max(meterScale, 1e-6)).toFixed(3));
 
     if (now - lastReadout > 200) {
       lastReadout = now;
@@ -1001,10 +1058,14 @@ input[type="range"]:disabled { cursor: default; }
     }
     if (!points.length) return;
 
-    let peak = 0;
-    for (const p of points) { if (p.e > peak) peak = p.e; if (p.thr > peak) peak = p.thr; }
-    const target = Math.max(peak * 1.2, 0.004);
-    if (instant) meterScale = target;
+    // Both modes plot a ratio to their own trigger level, so the trigger line always sits at 1.
+    const follow = settings.mode === 'follow';
+    const val = follow ? (p) => p.f : (p) => p.v;
+    const line = () => 1;
+    let peak = 1;
+    for (const p of points) peak = Math.max(peak, val(p));
+    const target = Math.max(peak * 1.2, 2);
+    if (instant || meterReset) { meterScale = target; meterReset = false; }
     else meterScale += (target - meterScale) * (target > meterScale ? 0.3 : 0.02);
 
     const top = 14;
@@ -1014,14 +1075,14 @@ input[type="range"]:disabled { cursor: default; }
 
     c.beginPath();
     c.moveTo(X(points[0].t), h);
-    for (const p of points) c.lineTo(X(p.t), Y(p.e));
+    for (const p of points) c.lineTo(X(p.t), Y(val(p)));
     c.lineTo(X(points[points.length - 1].t), h);
     c.closePath();
     c.fillStyle = COLORS.fill;
     c.fill();
 
     c.beginPath();
-    points.forEach((p, i) => { const x = X(p.t), y = Y(p.e); if (i) c.lineTo(x, y); else c.moveTo(x, y); });
+    points.forEach((p, i) => { const x = X(p.t), y = Y(val(p)); if (i) c.lineTo(x, y); else c.moveTo(x, y); });
     c.strokeStyle = COLORS.amber;
     c.lineWidth = 1.75;
     c.lineJoin = 'round';
@@ -1030,7 +1091,7 @@ input[type="range"]:disabled { cursor: default; }
     c.save();
     c.setLineDash([4, 4]);
     c.beginPath();
-    points.forEach((p, i) => { const x = X(p.t), y = Y(p.thr); if (i) c.lineTo(x, y); else c.moveTo(x, y); });
+    points.forEach((p, i) => { const x = X(p.t), y = Y(line(p)); if (i) c.lineTo(x, y); else c.moveTo(x, y); });
     c.strokeStyle = COLORS.dim;
     c.lineWidth = 1.25;
     c.stroke();
@@ -1052,12 +1113,12 @@ input[type="range"]:disabled { cursor: default; }
     let seed = 11;
     const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
     for (let t = 0; t <= TRACE_MS; t += step) {
-      const ph = (t + 230) % 469;
+      const ph = (t + 230) % 469;                       // drum hits at 128 BPM
       const kick = ph < 320 ? 0.05 * Math.exp(-ph / 55) : 0;
-      const bassLine = 0.012 + 0.005 * Math.sin(t / 310) + 0.004 * rand();
-      const raw = Math.sqrt(kick * kick + bassLine * bassLine);
-      const r = detectStep(d, raw, t, step, 0.6);
-      pts.push({ t, e: r.e, thr: r.thr, beat: r.beat });
+      const bass = 0.012 + 0.005 * Math.sin(t / 310) + 0.004 * rand() + kick;
+      const hi = 0.004 + 0.002 * rand() + (ph < 120 ? 0.02 * Math.exp(-ph / 30) : 0);
+      const r = detectStep(d, { bass, hi, body: bass * 1.4 + hi, levelDb: -30 }, t, step, 0.6);
+      pts.push({ t, v: r.strength, f: r.body, beat: r.beat });
     }
     return { pts, now: TRACE_MS };
   }
