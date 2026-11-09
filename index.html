@@ -1,0 +1,1153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14120f">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="Flashes the iPhone flashlight in time with the music the microphone hears.">
+<title>Beat Light</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500&family=Barlow+Condensed:wght@500;600&family=Saira+Stencil+One&family=Share+Tech+Mono&display=swap">
+<style>
+/* Layout: one column, read like the front of a stage light: the lamp, its readouts, the sound-to-light trace, then the controls. */
+:root {
+  color-scheme: dark;
+  /* Color */
+  --case: #14120f;      /* road-case black */
+  --panel: #1e1b17;     /* control panel */
+  --edge: #3a342b;      /* panel edge */
+  --ink: #f2ebdf;       /* labels */
+  --ink-dim: #a99f8f;   /* secondary text */
+  --amber: #ffb020;     /* lamp and accent */
+  /* Derived from the palette */
+  --amber-deep: #b86400;
+  --on-amber: #1c1304;
+  --hot: #fff7e8;
+  --lens: #2b261f;
+  --lens-edge: #0f0d0b;
+  --ring: rgba(255, 238, 210, 0.07);
+  --ring-lit: rgba(255, 255, 255, 0.3);
+  --glow: rgba(255, 176, 32, 0.6);
+  --glow-soft: rgba(255, 176, 32, 0.4);
+  --track: #2f2a23;
+  --grid: rgba(242, 235, 223, 0.07);
+  --trace-fill: rgba(255, 176, 32, 0.16);
+  --flash: #fff8ec;
+  --shade: rgba(0, 0, 0, 0.45);
+  --ok: #86d6a4;
+  --warn: #ffa65c;
+  --bad: #ff7b6b;
+  /* Type */
+  --font-display: "Saira Stencil One", "Barlow Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "Barlow", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-label: "Barlow Condensed", "Arial Narrow", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-readout: "Share Tech Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; background: var(--case); }
+body {
+  margin: 0;
+  background: var(--case);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.45;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-top: calc(env(safe-area-inset-top, 0px) + 18px);
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 32px);
+  -webkit-tap-highlight-color: transparent;
+}
+button, input { font: inherit; touch-action: manipulation; }
+.app { max-width: 440px; margin: 0 auto; display: grid; gap: 20px; }
+.app > * { min-width: 0; }
+
+/* Header */
+.top { display: grid; gap: 8px; }
+.brand-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.brand {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 34px;
+  line-height: 1;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ink);
+  text-wrap: balance;
+}
+.brand span { color: var(--amber); }
+.tag {
+  font-family: var(--font-label);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  padding: 3px 7px;
+}
+.lede { margin: 0; color: var(--ink-dim); max-width: 36ch; }
+
+/* The lamp */
+.stage { display: grid; justify-items: center; gap: 20px; padding-block: 14px 0; }
+.lamp {
+  --lvl: 0;
+  position: relative;
+  width: min(62vw, 236px);
+  max-width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  background: var(--lens-edge);
+  box-shadow:
+    0 0 0 2px var(--edge),
+    0 0 0 9px var(--panel),
+    0 0 0 10px var(--edge),
+    0 0 calc(var(--lvl) * 70px) calc(var(--lvl) * 8px) var(--glow-soft);
+}
+.lamp.is-lit {
+  box-shadow:
+    0 0 0 2px var(--edge),
+    0 0 0 9px var(--panel),
+    0 0 0 10px var(--edge),
+    0 0 90px 26px var(--glow);
+}
+.lens {
+  position: absolute;
+  inset: 8%;
+  border-radius: 50%;
+  background:
+    repeating-radial-gradient(circle at 50% 50%, var(--ring) 0 1.5px, transparent 1.5px 9px),
+    radial-gradient(circle at 50% 42%, var(--lens) 0%, var(--lens-edge) 80%);
+  transform: scale(calc(0.97 + var(--lvl) * 0.03));
+}
+.lens::after {
+  content: "";
+  position: absolute;
+  inset: 40%;
+  border-radius: 50%;
+  background: var(--lens-edge);
+  box-shadow: inset 0 0 0 2px var(--edge);
+}
+.lamp.is-lit .lens {
+  background:
+    repeating-radial-gradient(circle at 50% 50%, var(--ring-lit) 0 1.5px, transparent 1.5px 9px),
+    radial-gradient(circle at 50% 45%, var(--hot) 0%, var(--hot) 24%, var(--amber) 64%, var(--amber-deep) 100%);
+}
+.lamp.is-lit .lens::after { background: var(--hot); box-shadow: 0 0 24px 6px var(--hot); }
+
+/* Start button and status */
+.btn-main {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  max-width: 380px;
+  min-height: 58px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--amber);
+  color: var(--on-amber);
+  font-family: var(--font-label);
+  font-weight: 600;
+  font-size: 21px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.btn-main.is-running { background: transparent; color: var(--amber); box-shadow: inset 0 0 0 2px var(--amber); }
+.btn-main:active { transform: translateY(1px); }
+.btn-main:disabled { opacity: 0.55; cursor: progress; }
+.btn-main:focus-visible, .btn-ghost:focus-visible, .seg button:focus-visible { outline: 3px solid var(--hot); outline-offset: 3px; }
+
+.status {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  max-width: 380px;
+  min-height: 2.9em;
+  margin: 0;
+  font-size: 15px;
+  color: var(--ink-dim);
+}
+.status[data-tone="ok"] { color: var(--ink); }
+.led { flex: none; width: 9px; height: 9px; margin-top: 0.45em; border-radius: 50%; background: var(--edge); }
+.status[data-tone="busy"] .led { background: var(--amber); box-shadow: 0 0 8px var(--glow); animation: blink 0.9s steps(2, start) infinite; }
+.status[data-tone="ok"] .led { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.status[data-tone="warn"] .led { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+.status[data-tone="bad"] .led { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+@keyframes blink { to { visibility: hidden; } }
+
+/* Readouts */
+.readouts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  background: var(--edge);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.readout { min-width: 0; padding: 10px 12px 12px; background: var(--panel); }
+.readout dt {
+  font-family: var(--font-label);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+.readout dd {
+  margin: 4px 0 0;
+  font-family: var(--font-readout);
+  font-size: 23px;
+  line-height: 1.1;
+  color: var(--amber);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.readout dd small { margin-left: 4px; font-size: 13px; color: var(--ink-dim); }
+
+/* Cards */
+.card {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+}
+.card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.card-title, .label {
+  margin: 0;
+  font-family: var(--font-label);
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+.card-note { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-dim); }
+.badge {
+  font-family: var(--font-label);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--case);
+  background: var(--ink-dim);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+.meter { display: block; width: 100%; height: 96px; border-radius: 6px; background: var(--case); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--ink-dim); }
+.key { display: inline-flex; align-items: center; gap: 7px; }
+.sw-line { display: inline-block; width: 18px; height: 3px; border-radius: 2px; background: var(--amber); }
+.sw-dash { display: inline-block; width: 18px; height: 2px; background: repeating-linear-gradient(90deg, var(--ink-dim) 0 4px, transparent 4px 8px); }
+.sw-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--hot); }
+
+/* Controls */
+.field { display: grid; gap: 8px; }
+.field-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.value { font-family: var(--font-readout); font-size: 18px; color: var(--amber); font-variant-numeric: tabular-nums; }
+.hint { margin: 0; font-size: 14px; color: var(--ink-dim); }
+.field.is-off .value, .field.is-off input { opacity: 0.4; }
+
+.seg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  padding: 3px;
+  background: var(--case);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+}
+.seg button {
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: 46px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-dim);
+  font-family: var(--font-label);
+  font-weight: 600;
+  font-size: 17px;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+.seg button[aria-checked="true"] { background: var(--edge); color: var(--ink); box-shadow: inset 0 -2px 0 var(--amber); }
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 34px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--amber) 0 var(--fill, 50%), var(--track) var(--fill, 50%) 100%);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 28px;
+  height: 28px;
+  margin-top: -11px;
+  border-radius: 50%;
+  background: var(--ink);
+  border: 3px solid var(--amber);
+  box-shadow: 0 2px 6px var(--shade);
+}
+input[type="range"]::-moz-range-track { height: 6px; border-radius: 3px; background: var(--track); }
+input[type="range"]::-moz-range-progress { height: 6px; border-radius: 3px; background: var(--amber); }
+input[type="range"]::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; background: var(--ink); border: 3px solid var(--amber); }
+input[type="range"]:focus-visible { outline: 2px solid var(--hot); outline-offset: 4px; border-radius: 4px; }
+input[type="range"]:disabled { cursor: default; }
+
+.switch-row { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; }
+.switch-text { display: grid; gap: 2px; min-width: 0; }
+.switch-input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; pointer-events: none; }
+.switch-ui { position: relative; flex: none; width: 52px; height: 32px; border-radius: 16px; background: var(--track); transition: background-color 0.15s; }
+.switch-ui::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--ink);
+  box-shadow: 0 1px 3px var(--shade);
+  transition: transform 0.15s;
+}
+.switch-input:checked + .switch-ui { background: var(--amber); }
+.switch-input:checked + .switch-ui::after { transform: translateX(20px); background: var(--hot); }
+.switch-input:focus-visible + .switch-ui { outline: 2px solid var(--hot); outline-offset: 3px; }
+
+.btn-ghost {
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: 48px;
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-label);
+  font-weight: 600;
+  font-size: 17px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.btn-ghost:disabled { opacity: 0.4; cursor: default; }
+
+/* Tips */
+.tips { display: grid; gap: 10px; }
+.tips ul { display: grid; gap: 8px; margin: 0; padding-left: 18px; font-size: 15px; color: var(--ink-dim); }
+
+/* Screen flash and the hidden camera feed */
+.flash { position: fixed; inset: 0; z-index: 50; background: var(--flash); opacity: 0; pointer-events: none; }
+.flash.is-on { opacity: 0.94; }
+.cam { position: fixed; left: 0; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lens { transform: none; }
+  .status[data-tone="busy"] .led { animation: none; }
+  .switch-ui, .switch-ui::after { transition: none; }
+}
+</style>
+</head>
+<body>
+<main class="app">
+  <header class="top">
+    <div class="brand-row">
+      <h1 class="brand">Beat <span>Light</span></h1>
+      <span class="tag">Sound-to-light</span>
+    </div>
+    <p class="lede">Flashes your iPhone flashlight in time with the music it hears.</p>
+  </header>
+
+  <section class="stage" aria-label="Light">
+    <div class="lamp" id="lamp" aria-hidden="true"><div class="lens"></div></div>
+    <button type="button" class="btn-main" id="start">Start listening</button>
+    <p class="status" id="status" data-tone="idle" role="status" aria-live="polite"><span class="led" aria-hidden="true"></span><span id="statusText">Loading&hellip;</span></p>
+  </section>
+
+  <dl class="readouts">
+    <div class="readout"><dt>Tempo</dt><dd><span id="tempo">--</span><small>BPM</small></dd></div>
+    <div class="readout"><dt>Input</dt><dd><span id="input">--</span><small>dB</small></dd></div>
+    <div class="readout"><dt>Light delay</dt><dd><span id="delay">--</span><small>ms</small></dd></div>
+  </dl>
+
+  <section class="card" aria-labelledby="meterTitle">
+    <div class="card-head">
+      <h2 class="card-title" id="meterTitle">Kick drum band</h2>
+      <span class="card-note">40&ndash;150 Hz <span class="badge" id="exampleBadge">Example</span></span>
+    </div>
+    <canvas class="meter" id="meter" role="img" aria-label="Bass level over the last six seconds, with the trigger line and the detected beats"></canvas>
+    <div class="legend" aria-hidden="true">
+      <span class="key"><i class="sw-line"></i>Bass level</span>
+      <span class="key"><i class="sw-dash"></i>Trigger line</span>
+      <span class="key"><i class="sw-dot"></i>Beat</span>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="ctlTitle">
+    <h2 class="card-title" id="ctlTitle">Controls</h2>
+
+    <div class="field">
+      <span class="label" id="modeLabel">Mode</span>
+      <div class="seg" role="radiogroup" aria-labelledby="modeLabel">
+        <button type="button" role="radio" id="modeBeat" aria-checked="true">On the beat</button>
+        <button type="button" role="radio" id="modeFollow" aria-checked="false">Follow the bass</button>
+      </div>
+      <p class="hint" id="modeHint">A short flash on each kick drum.</p>
+    </div>
+
+    <div class="field">
+      <div class="field-row"><label class="label" for="sens">Sensitivity</label><output class="value" id="sensOut" for="sens">60</output></div>
+      <input type="range" id="sens" min="0" max="100" step="1" value="60">
+      <p class="hint">Raise it if beats are missed. Lower it if the light flickers between beats.</p>
+    </div>
+
+    <div class="field" id="lenField">
+      <div class="field-row"><label class="label" for="len">Flash length</label><output class="value" id="lenOut" for="len">90 ms</output></div>
+      <input type="range" id="len" min="30" max="400" step="10" value="90">
+      <p class="hint" id="lenHint">How long each flash lasts.</p>
+    </div>
+
+    <label class="switch-row" for="screenFlash">
+      <span class="switch-text">
+        <span class="label">Flash the screen too</span>
+        <span class="hint">Turns on by itself when the flashlight is not available.</span>
+      </span>
+      <input type="checkbox" id="screenFlash" class="switch-input">
+      <span class="switch-ui" aria-hidden="true"></span>
+    </label>
+
+    <button type="button" class="btn-ghost" id="test" disabled>Test light</button>
+  </section>
+
+  <section class="tips" aria-labelledby="tipsTitle">
+    <h2 class="card-title" id="tipsTitle">Tips</h2>
+    <ul>
+      <li>Play the music from a speaker, TV or live band in the room. Music playing on this same iPhone may pause when the microphone turns on.</li>
+      <li>Keep this page open with the screen unlocked. iOS turns the light off when you lock the phone or switch apps.</li>
+      <li>Nothing is recorded or uploaded. The camera is only used to switch the flashlight.</li>
+      <li>Fast flashing light can trigger seizures in people with photosensitive epilepsy.</li>
+    </ul>
+  </section>
+</main>
+
+<div class="flash" id="flash" aria-hidden="true"></div>
+<video id="cam" class="cam" playsinline muted autoplay aria-hidden="true"></video>
+
+<script>
+(() => {
+  'use strict';
+
+  /* detector:start */
+  const RELEASE_MS = 90;    // how quickly the bass envelope falls after a hit
+  const HISTORY_MS = 1000;  // window for the running average
+  const ONSET_MS = 70;      // a hit must jump up within this time
+  const MIN_GAP_MS = 150;   // closest two beats can be (400 BPM)
+
+  function createDetector() {
+    return { env: 0, prevE: 0, floor: 0, hist: [], lastBeat: -1e9, armed: true, follow: false };
+  }
+
+  // One analysis step. raw is the RMS level of the 40 to 150 Hz band; sens runs from 0 to 1.
+  function detectStep(d, raw, now, dt, sens) {
+    d.env = Math.max(raw, d.env * Math.exp(-dt / RELEASE_MS));
+    const e = d.env;
+    // Noise floor: drops straight to quiet moments and creeps back up by about 25% a second.
+    d.floor = d.floor > 0 ? Math.min(e, d.floor * (1 + 0.25 * dt / 1000)) : e;
+
+    const h = d.hist;
+    while (h.length && now - h[0].t > HISTORY_MS) h.shift();
+    const warm = h.length >= 8;
+    let mean = e;
+    let sd = 0;
+    let valley = e;
+    if (warm) {
+      let sum = 0;
+      for (let i = 0; i < h.length; i++) sum += h[i].e;
+      mean = sum / h.length;
+      let v = 0;
+      for (let i = 0; i < h.length; i++) { const dv = h[i].e - mean; v += dv * dv; }
+      sd = Math.sqrt(v / h.length);
+      for (let i = h.length - 1; i >= 0 && now - h[i].t <= ONSET_MS; i--) if (h[i].e < valley) valley = h[i].e;
+    }
+    h.push({ t: now, e });
+
+    const k = 2.6 - 1.6 * sens;                           // how far above the average a hit must rise
+    const quiet = 0.012 * Math.pow(1 / 6, sens);          // below this the room counts as silent
+    const gate = Math.max(quiet, d.floor * 1.6);
+    const thr = Math.max(gate, mean + k * sd, mean * (1.25 + 0.35 * (1 - sens)));
+    const onThr = Math.max(gate, mean + 0.6 * k * sd, mean * 1.15);
+    const sharp = e >= valley * (1.5 - 0.25 * sens);      // a kick jumps up; a swelling bass note does not
+
+    if (!d.armed && (e < thr * 0.85 || now - d.lastBeat > 400)) d.armed = true;
+    let beat = false;
+    if (warm && d.armed && sharp && e > thr && e > d.prevE && now - d.lastBeat > MIN_GAP_MS) {
+      beat = true;
+      d.armed = false;
+      d.lastBeat = now;
+    }
+    d.prevE = e;
+
+    if (!d.follow && warm && e > onThr) d.follow = true;
+    else if (d.follow && e < onThr * 0.8) d.follow = false;
+
+    return { e, thr, onThr, beat, follow: d.follow };
+  }
+  /* detector:end */
+
+  const $ = (id) => document.getElementById(id);
+  const ui = {
+    start: $('start'), test: $('test'), status: $('status'), statusText: $('statusText'),
+    lamp: $('lamp'), flash: $('flash'), cam: $('cam'),
+    tempo: $('tempo'), input: $('input'), delay: $('delay'),
+    meter: $('meter'), exampleBadge: $('exampleBadge'),
+    sens: $('sens'), sensOut: $('sensOut'), len: $('len'), lenOut: $('lenOut'),
+    lenField: $('lenField'), lenHint: $('lenHint'), screen: $('screenFlash'),
+    modeBeat: $('modeBeat'), modeFollow: $('modeFollow'), modeHint: $('modeHint')
+  };
+
+  const AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+  const VIDEO_BASE = { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } };
+  const TRACE_MS = 6000;
+  const STORE_KEY = 'beat-light-settings';
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const framed = (() => { try { return window.self !== window.top; } catch (e) { return true; } })();
+
+  const tokens = getComputedStyle(document.documentElement);
+  const tok = (name) => tokens.getPropertyValue(name).trim();
+  const COLORS = { amber: tok('--amber'), hot: tok('--hot'), dim: tok('--ink-dim'), grid: tok('--grid'), fill: tok('--trace-fill') };
+
+  /* Settings, remembered on this phone only */
+  const settings = loadSettings();
+  function loadSettings() {
+    const s = { mode: 'beat', sens: 60, flashMs: 90, screen: false };
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+      if (saved && typeof saved === 'object') {
+        if (saved.mode === 'beat' || saved.mode === 'follow') s.mode = saved.mode;
+        if (Number.isFinite(saved.sens)) s.sens = Math.min(100, Math.max(0, Math.round(saved.sens)));
+        if (Number.isFinite(saved.flashMs)) s.flashMs = Math.min(400, Math.max(30, Math.round(saved.flashMs / 10) * 10));
+        if (typeof saved.screen === 'boolean') s.screen = saved.screen;
+      }
+    } catch (e) { /* storage is unavailable, so the defaults stay */ }
+    return s;
+  }
+  function saveSettings() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(settings)); } catch (e) { /* not saved */ }
+  }
+
+  /* Runtime state */
+  let running = false;
+  let starting = false;
+  let runId = 0;
+  let stream = null, audioTrack = null, videoTrack = null;
+  let audioCtx = null, nodes = [], readBass = null, readFull = null;
+  let rafId = 0, lastFrame = 0, lastReadout = 0, manualUntil = 0;
+  let wakeLock = null;
+  let lightOn = false, lightTimer = 0, screenAuto = false;
+  let cameraState = 'none';           // torch | no-torch | no-camera | lost
+  let det = createDetector();
+  let tempoBeats = [];
+  let levelDb = -200, silentSince = 0, silenceShown = false;
+  const trace = [];
+  let meterScale = 0.02;
+  let frozen = { pts: [], now: 0 };
+  const torch = { ok: false, desired: false, actual: false, busy: false, fails: 0, lag: 0 };
+
+  /* Status line */
+  function setStatus(text, tone) {
+    ui.statusText.textContent = text;
+    ui.status.dataset.tone = tone || 'idle';
+  }
+  function runningMessage() {
+    const what = settings.mode === 'beat' ? 'flashes on each beat' : 'follows the bass';
+    switch (cameraState) {
+      case 'torch':
+        return ['Listening. The flashlight ' + what + '.', 'ok'];
+      case 'no-torch':
+        return ['Listening. This browser cannot switch the flashlight, so the screen ' + what + ' instead. Flashlight control needs iOS 17.4 or later.', 'warn'];
+      case 'lost':
+        return ['The flashlight stopped responding, so the screen ' + what + ' instead. Tap Stop, then Start listening to try the flashlight again.', 'warn'];
+      default:
+        return ['Listening without the camera, so the screen ' + what + ' instead. The flashlight needs camera access.', 'warn'];
+    }
+  }
+  function showRunningStatus() {
+    const m = runningMessage();
+    setStatus(m[0], m[1]);
+  }
+  function initialStatus() {
+    if (framed) return ['This preview cannot use the camera or microphone. Open the page on its own in Safari.', 'warn'];
+    if (!window.isSecureContext) return ['Open this page from an https:// address. Safari only allows the microphone and flashlight on secure pages.', 'warn'];
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return ['This browser cannot use the microphone on this page. Open it in Safari.', 'warn'];
+    return ['Tap Start listening, then allow the camera and microphone. The camera is only used to switch the flashlight.', 'idle'];
+  }
+  function mediaErrorMessage(err) {
+    const name = err && err.name;
+    if (framed) return 'This preview cannot use the camera or microphone. Open the page on its own in Safari.';
+    if (name === 'NotAllowedError' || name === 'SecurityError') return 'Camera and microphone access is blocked for this page. Allow both in Safari’s website settings for this site, then reload the page.';
+    if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'No microphone was found on this device.';
+    if (name === 'NotReadableError' || name === 'AbortError') return 'Another app is using the microphone or camera. Close it or end the call, then tap Start listening again.';
+    if (!window.isSecureContext) return 'This page needs an https:// address before Safari allows the microphone.';
+    return 'Could not start: ' + ((err && err.message) || name || 'unknown error') + '.';
+  }
+
+  /* Controls */
+  function setFill(input) {
+    const min = Number(input.min), max = Number(input.max);
+    const pct = ((Number(input.value) - min) / (max - min)) * 100;
+    input.style.setProperty('--fill', pct + '%');
+  }
+  function renderSliders() {
+    ui.sens.value = settings.sens;
+    ui.sensOut.textContent = String(settings.sens);
+    ui.len.value = settings.flashMs;
+    ui.lenOut.textContent = settings.flashMs + ' ms';
+    setFill(ui.sens);
+    setFill(ui.len);
+  }
+  function renderMode() {
+    const beat = settings.mode === 'beat';
+    ui.modeBeat.setAttribute('aria-checked', String(beat));
+    ui.modeFollow.setAttribute('aria-checked', String(!beat));
+    ui.modeBeat.tabIndex = beat ? 0 : -1;
+    ui.modeFollow.tabIndex = beat ? -1 : 0;
+    ui.modeHint.textContent = beat ? 'A short flash on each kick drum.' : 'The light stays on while the bass is loud.';
+    ui.len.disabled = !beat;
+    ui.lenField.classList.toggle('is-off', !beat);
+    ui.lenHint.textContent = beat ? 'How long each flash lasts.' : 'Not used while following the bass.';
+  }
+  function setMode(mode) {
+    if (settings.mode === mode) return;
+    settings.mode = mode;
+    saveSettings();
+    renderMode();
+    det.follow = false;
+    clearTimeout(lightTimer);
+    setLight(false);
+    if (running && !silenceShown) showRunningStatus();
+  }
+
+  /* Light: the flashlight, the lamp on screen and the optional screen flash */
+  function torchConstraint(on) {
+    return Object.assign({}, VIDEO_BASE, { torch: on, advanced: [{ torch: on }] });
+  }
+  function resetTorch() {
+    torch.ok = false; torch.desired = false; torch.actual = false;
+    torch.busy = false; torch.fails = 0; torch.lag = 0;
+  }
+  // Sends one change at a time to the camera and always catches up to the latest wanted state.
+  async function pumpTorch() {
+    const track = videoTrack;
+    // While the page is hidden iOS pauses the camera; the wanted state is sent again on return.
+    if (document.visibilityState === 'hidden') return;
+    if (!torch.ok || !track || torch.busy || torch.desired === torch.actual) return;
+    torch.busy = true;
+    const target = torch.desired;
+    const t0 = performance.now();
+    let failed = false;
+    try {
+      await track.applyConstraints(torchConstraint(target));
+      if (track !== videoTrack) return;
+      torch.actual = target;
+      torch.fails = 0;
+      const lag = performance.now() - t0;
+      torch.lag = torch.lag ? torch.lag * 0.8 + lag * 0.2 : lag;
+    } catch (err) {
+      if (track !== videoTrack) return;
+      failed = true;
+      torch.fails += 1;
+    } finally {
+      if (track === videoTrack) torch.busy = false;
+    }
+    if (!torch.ok) return;
+    if (torch.fails >= 3) { torchLost(); return; }
+    if (torch.desired !== torch.actual) {
+      if (failed) setTimeout(pumpTorch, 120);
+      else pumpTorch();
+    }
+  }
+  // When the flashlight is unavailable the screen flash turns on for this session only.
+  function screenFallback() {
+    if (!settings.screen) { settings.screen = true; screenAuto = true; ui.screen.checked = true; }
+  }
+  function torchLost() {
+    torch.ok = false;
+    cameraState = 'lost';
+    screenFallback();
+    ui.flash.classList.toggle('is-on', lightOn && settings.screen);
+    if (running) showRunningStatus();
+  }
+  async function detectTorch(track) {
+    let caps = {};
+    try { caps = (track.getCapabilities && track.getCapabilities()) || {}; } catch (e) { caps = {}; }
+    const t = caps.torch;
+    if (t === true || (Array.isArray(t) && t.indexOf(true) !== -1)) return true;
+    // Some versions do not list the torch, so switch it off and see whether the camera reports a torch setting.
+    try {
+      await Promise.race([
+        track.applyConstraints(torchConstraint(false)),
+        wait(2500).then(() => { throw new Error('timeout'); })
+      ]);
+      const s = (track.getSettings && track.getSettings()) || {};
+      return typeof s.torch === 'boolean';
+    } catch (e) {
+      return false;
+    }
+  }
+  function setLight(on) {
+    if (on === lightOn) return;
+    lightOn = on;
+    ui.lamp.classList.toggle('is-lit', on);
+    ui.flash.classList.toggle('is-on', on && settings.screen);
+    if (torch.ok) {
+      torch.desired = on;
+      pumpTorch();
+    }
+  }
+  function pulse(ms) {
+    clearTimeout(lightTimer);
+    setLight(true);
+    lightTimer = setTimeout(() => setLight(false), ms);
+  }
+
+  /* Audio */
+  function makeReader(analyser) {
+    const n = analyser.fftSize;
+    if (typeof analyser.getFloatTimeDomainData === 'function') {
+      const buf = new Float32Array(n);
+      return () => {
+        analyser.getFloatTimeDomainData(buf);
+        let s = 0;
+        for (let i = 0; i < n; i++) s += buf[i] * buf[i];
+        return Math.sqrt(s / n);
+      };
+    }
+    const bytes = new Uint8Array(n);
+    return () => {
+      analyser.getByteTimeDomainData(bytes);
+      let s = 0;
+      for (let i = 0; i < n; i++) { const v = (bytes[i] - 128) / 128; s += v * v; }
+      return Math.sqrt(s / n);
+    };
+  }
+  function buildAudioGraph() {
+    disconnectGraph();
+    const src = audioCtx.createMediaStreamSource(new MediaStream([audioTrack]));
+    const hp = audioCtx.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = 40; hp.Q.value = 0.707;
+    const lp = audioCtx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 150; lp.Q.value = 0.707;
+    const bass = audioCtx.createAnalyser();
+    bass.fftSize = 2048; bass.smoothingTimeConstant = 0;
+    const full = audioCtx.createAnalyser();
+    full.fftSize = 1024; full.smoothingTimeConstant = 0;
+    // A silent output keeps Safari processing the analysers without playing anything.
+    const silent = audioCtx.createGain();
+    silent.gain.value = 0;
+    src.connect(hp); hp.connect(lp); lp.connect(bass); bass.connect(silent);
+    src.connect(full); full.connect(silent);
+    silent.connect(audioCtx.destination);
+    nodes = [src, hp, lp, bass, full, silent];
+    readBass = makeReader(bass);
+    readFull = makeReader(full);
+  }
+  function disconnectGraph() {
+    nodes.forEach((n) => { try { n.disconnect(); } catch (e) { /* already disconnected */ } });
+    nodes = [];
+    readBass = null;
+    readFull = null;
+  }
+
+  /* Start and stop */
+  async function start() {
+    if (running || starting) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !AC) {
+      setStatus('This browser cannot use the microphone on this page. Open it in Safari from an https:// address.', 'bad');
+      return;
+    }
+    // iOS only lets audio start inside a tap, so wake the audio engine before anything is awaited.
+    try {
+      if (!audioCtx || audioCtx.state === 'closed') audioCtx = new AC();
+      audioCtx.resume().catch(() => {});
+    } catch (err) {
+      setStatus('The audio engine could not start: ' + ((err && err.message) || err) + '.', 'bad');
+      return;
+    }
+    const myRun = ++runId;
+    starting = true;
+    ui.start.disabled = true;
+    setStatus('Waiting for camera and microphone permission…', 'busy');
+
+    let media = null;
+    try {
+      media = await navigator.mediaDevices.getUserMedia({ audio: AUDIO, video: Object.assign({ facingMode: { ideal: 'environment' } }, VIDEO_BASE) });
+    } catch (err) {
+      media = null;
+    }
+    if (myRun !== runId) { if (media) media.getTracks().forEach((t) => t.stop()); return; }
+    if (!media) {
+      // The camera was refused or is busy; the microphone alone still drives the screen flash.
+      try {
+        media = await navigator.mediaDevices.getUserMedia({ audio: AUDIO });
+      } catch (err) {
+        if (myRun !== runId) return;
+        starting = false;
+        ui.start.disabled = false;
+        setStatus(mediaErrorMessage(err), 'bad');
+        return;
+      }
+      if (myRun !== runId) { media.getTracks().forEach((t) => t.stop()); return; }
+    }
+
+    stream = media;
+    audioTrack = stream.getAudioTracks()[0] || null;
+    videoTrack = stream.getVideoTracks()[0] || null;
+    if (!audioTrack) { stop('No microphone was found on this device.', 'bad'); return; }
+    try {
+      buildAudioGraph();
+    } catch (err) {
+      stop('Could not start listening: ' + ((err && err.message) || err) + '.', 'bad');
+      return;
+    }
+    try { await audioCtx.resume(); } catch (e) { /* retried on the next tap */ }
+    if (myRun !== runId) return;
+
+    audioTrack.addEventListener('ended', onAudioEnded);
+    audioTrack.addEventListener('mute', onAudioMute);
+    audioTrack.addEventListener('unmute', onAudioUnmute);
+
+    resetTorch();
+    if (videoTrack) {
+      ui.cam.srcObject = new MediaStream([videoTrack]);
+      await Promise.race([ui.cam.play().catch(() => {}), wait(1500)]);
+      if (myRun !== runId) return;
+      setStatus('Checking the flashlight…', 'busy');
+      const ok = await detectTorch(videoTrack);
+      if (myRun !== runId) return;
+      torch.ok = ok;
+      cameraState = ok ? 'torch' : 'no-torch';
+      const vt = videoTrack;
+      vt.addEventListener('ended', () => { if (running && vt === videoTrack && torch.ok) torchLost(); });
+    } else {
+      cameraState = 'no-camera';
+    }
+    if (!torch.ok) screenFallback();
+    else if (screenAuto) { settings.screen = false; screenAuto = false; ui.screen.checked = false; }
+
+    det = createDetector();
+    tempoBeats = [];
+    trace.length = 0;
+    meterScale = 0.02;
+    levelDb = -200;
+    silentSince = 0;
+    silenceShown = false;
+    manualUntil = 0;
+    lastReadout = 0;
+
+    running = true;
+    starting = false;
+    ui.start.disabled = false;
+    ui.start.textContent = 'Stop';
+    ui.start.classList.add('is-running');
+    ui.test.disabled = false;
+    ui.exampleBadge.hidden = true;
+    showRunningStatus();
+    requestWakeLock();
+    lastFrame = performance.now();
+    rafId = requestAnimationFrame(frame);
+    if (torch.ok) {
+      // A short blink confirms the flashlight is under control.
+      manualUntil = performance.now() + 250;
+      pulse(180);
+    }
+  }
+
+  function stop(message, tone) {
+    runId++;
+    if (running && trace.length) frozen = { pts: trace.slice(), now: lastFrame };
+    running = false;
+    starting = false;
+    cancelAnimationFrame(rafId);
+    clearTimeout(lightTimer);
+    resetTorch();
+    setLight(false);
+    if (stream) stream.getTracks().forEach((t) => { try { t.stop(); } catch (e) { /* already stopped */ } });
+    stream = null;
+    audioTrack = null;
+    videoTrack = null;
+    try { ui.cam.srcObject = null; } catch (e) { /* nothing attached */ }
+    disconnectGraph();
+    if (audioCtx && audioCtx.state === 'running') audioCtx.suspend().catch(() => {});
+    releaseWakeLock();
+    ui.start.disabled = false;
+    ui.start.textContent = 'Start listening';
+    ui.start.classList.remove('is-running');
+    ui.test.disabled = true;
+    ui.tempo.textContent = '--';
+    ui.input.textContent = '--';
+    ui.delay.textContent = '--';
+    ui.lamp.style.setProperty('--lvl', '0');
+    setStatus(message || 'Stopped. Tap Start listening to begin again.', tone || 'idle');
+    if (frozen.pts.length) drawMeter(frozen.pts, frozen.now, true);
+  }
+
+  function onAudioEnded() { if (running) stop('The microphone stopped. Tap Start listening to try again.', 'warn'); }
+  function onAudioMute() { if (running) setStatus('Another app is using the microphone. Listening resumes when it is free.', 'warn'); }
+  function onAudioUnmute() { if (running && !silenceShown) showRunningStatus(); }
+
+  /* The loop */
+  function noteBeat(t) {
+    tempoBeats.push(t);
+    if (tempoBeats.length > 16) tempoBeats.shift();
+    if (tempoBeats.length >= 5) {
+      const iv = [];
+      for (let i = 1; i < tempoBeats.length; i++) iv.push(tempoBeats[i] - tempoBeats[i - 1]);
+      iv.sort((a, b) => a - b);
+      let bpm = 60000 / iv[iv.length >> 1];
+      while (bpm < 70) bpm *= 2;
+      while (bpm > 180) bpm /= 2;
+      ui.tempo.textContent = String(Math.round(bpm));
+    }
+  }
+  function fmtDb(n) { return n < 0 ? '−' + Math.abs(n) : String(n); }
+
+  function frame(now) {
+    if (!running) return;
+    rafId = requestAnimationFrame(frame);
+    const dt = Math.min(100, Math.max(1, now - lastFrame));
+    lastFrame = now;
+
+    const raw = readBass();
+    const full = readFull();
+    const r = detectStep(det, raw, now, dt, settings.sens / 100);
+    if (r.beat) noteBeat(now);
+
+    if (now >= manualUntil) {
+      if (settings.mode === 'beat') { if (r.beat) pulse(settings.flashMs); }
+      else setLight(r.follow);
+    }
+
+    trace.push({ t: now, e: r.e, thr: settings.mode === 'beat' ? r.thr : r.onThr, beat: r.beat });
+    while (trace.length && now - trace[0].t > TRACE_MS) trace.shift();
+    drawMeter(trace, now, false);
+    ui.lamp.style.setProperty('--lvl', Math.min(1, r.e / Math.max(meterScale, 1e-6)).toFixed(3));
+
+    // Input level in dBFS: rises quickly and falls slowly, like a VU meter.
+    const db = Math.max(-90, 20 * Math.log10(full + 1e-9));
+    levelDb = levelDb < -150 ? db : levelDb + (db - levelDb) * Math.min(1, dt / (db > levelDb ? 120 : 700));
+    if (full < 1e-6) { if (!silentSince) silentSince = now; } else silentSince = 0;
+
+    if (now - lastReadout > 200) {
+      lastReadout = now;
+      ui.input.textContent = levelDb > -120 ? fmtDb(Math.round(levelDb)) : '--';
+      ui.delay.textContent = torch.ok && torch.lag ? String(Math.round(torch.lag)) : '--';
+      if (tempoBeats.length && now - det.lastBeat > 4000) { tempoBeats = []; ui.tempo.textContent = '--'; }
+      if (silentSince && now - silentSince > 4000) {
+        if (!silenceShown) {
+          silenceShown = true;
+          setStatus('The microphone is sending silence. Tap Stop, then Start listening again.', 'warn');
+        }
+      } else if (silenceShown) {
+        silenceShown = false;
+        showRunningStatus();
+      }
+    }
+  }
+
+  /* Sound-to-light trace */
+  const meterCtx = ui.meter.getContext('2d');
+  let meterW = 0, meterH = 0, meterDpr = 0;
+  function sizeMeter() {
+    const rect = ui.meter.getBoundingClientRect();
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    const w = Math.max(1, Math.round(rect.width));
+    const h = Math.max(1, Math.round(rect.height));
+    if (w !== meterW || h !== meterH || dpr !== meterDpr) {
+      meterW = w; meterH = h; meterDpr = dpr;
+      ui.meter.width = Math.round(w * dpr);
+      ui.meter.height = Math.round(h * dpr);
+    }
+    meterCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  function drawMeter(points, now, instant) {
+    sizeMeter();
+    const c = meterCtx, w = meterW, h = meterH;
+    c.clearRect(0, 0, w, h);
+    c.lineWidth = 1;
+    c.strokeStyle = COLORS.grid;
+    for (let i = 1; i < 4; i++) {
+      const y = Math.round((h * i) / 4) + 0.5;
+      c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
+    }
+    if (!points.length) return;
+
+    let peak = 0;
+    for (const p of points) { if (p.e > peak) peak = p.e; if (p.thr > peak) peak = p.thr; }
+    const target = Math.max(peak * 1.2, 0.004);
+    if (instant) meterScale = target;
+    else meterScale += (target - meterScale) * (target > meterScale ? 0.3 : 0.02);
+
+    const top = 14;
+    const span = h - top - 3;
+    const X = (t) => w - ((now - t) / TRACE_MS) * w;
+    const Y = (v) => h - 2 - Math.min(1, v / meterScale) * span;
+
+    c.beginPath();
+    c.moveTo(X(points[0].t), h);
+    for (const p of points) c.lineTo(X(p.t), Y(p.e));
+    c.lineTo(X(points[points.length - 1].t), h);
+    c.closePath();
+    c.fillStyle = COLORS.fill;
+    c.fill();
+
+    c.beginPath();
+    points.forEach((p, i) => { const x = X(p.t), y = Y(p.e); if (i) c.lineTo(x, y); else c.moveTo(x, y); });
+    c.strokeStyle = COLORS.amber;
+    c.lineWidth = 1.75;
+    c.lineJoin = 'round';
+    c.stroke();
+
+    c.save();
+    c.setLineDash([4, 4]);
+    c.beginPath();
+    points.forEach((p, i) => { const x = X(p.t), y = Y(p.thr); if (i) c.lineTo(x, y); else c.moveTo(x, y); });
+    c.strokeStyle = COLORS.dim;
+    c.lineWidth = 1.25;
+    c.stroke();
+    c.restore();
+
+    c.fillStyle = COLORS.hot;
+    for (const p of points) {
+      if (!p.beat) continue;
+      c.beginPath();
+      c.arc(X(p.t), 7, 3, 0, Math.PI * 2);
+      c.fill();
+    }
+  }
+  // An example trace (128 BPM) so the meter shows what it does before you start.
+  function buildExample() {
+    const d = createDetector();
+    const pts = [];
+    const step = 1000 / 60;
+    let seed = 11;
+    const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let t = 0; t <= TRACE_MS; t += step) {
+      const ph = (t + 230) % 469;
+      const kick = ph < 320 ? 0.05 * Math.exp(-ph / 55) : 0;
+      const bassLine = 0.012 + 0.005 * Math.sin(t / 310) + 0.004 * rand();
+      const raw = Math.sqrt(kick * kick + bassLine * bassLine);
+      const r = detectStep(d, raw, t, step, 0.6);
+      pts.push({ t, e: r.e, thr: r.thr, beat: r.beat });
+    }
+    return { pts, now: TRACE_MS };
+  }
+
+  /* Keep the screen awake while listening */
+  async function requestWakeLock() {
+    if (!('wakeLock' in navigator) || document.visibilityState !== 'visible') return;
+    try {
+      const lock = await navigator.wakeLock.request('screen');
+      if (!running) { lock.release().catch(() => {}); return; }
+      wakeLock = lock;
+      lock.addEventListener('release', () => { if (wakeLock === lock) wakeLock = null; });
+    } catch (e) {
+      wakeLock = null;
+    }
+  }
+  function releaseWakeLock() {
+    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  }
+
+  function onVisibility() {
+    if (!running) return;
+    if (document.visibilityState === 'visible') {
+      requestWakeLock();
+      if (audioCtx && audioCtx.state !== 'running') audioCtx.resume().catch(() => {});
+      if (!audioTrack || audioTrack.readyState === 'ended') {
+        stop('The microphone stopped while the page was in the background. Tap Start listening to continue.', 'warn');
+        return;
+      }
+      if (torch.ok && videoTrack && videoTrack.readyState === 'ended') { torchLost(); return; }
+      if (torch.ok) {
+        // iOS may have switched the light while the page was hidden, so send the wanted state again.
+        torch.actual = !torch.desired;
+        pumpTorch();
+      }
+    } else {
+      clearTimeout(lightTimer);
+      setLight(false);
+    }
+  }
+
+  /* Wiring */
+  ui.start.addEventListener('click', () => { if (running) stop(); else start(); });
+  ui.test.addEventListener('click', () => {
+    manualUntil = performance.now() + 450;
+    pulse(400);
+  });
+  ui.modeBeat.addEventListener('click', () => setMode('beat'));
+  ui.modeFollow.addEventListener('click', () => setMode('follow'));
+  [ui.modeBeat, ui.modeFollow].forEach((btn) => btn.addEventListener('keydown', (ev) => {
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].indexOf(ev.key) === -1) return;
+    ev.preventDefault();
+    const next = settings.mode === 'beat' ? 'follow' : 'beat';
+    setMode(next);
+    (next === 'beat' ? ui.modeBeat : ui.modeFollow).focus();
+  }));
+  ui.sens.addEventListener('input', () => {
+    settings.sens = Number(ui.sens.value);
+    ui.sensOut.textContent = String(settings.sens);
+    setFill(ui.sens);
+    saveSettings();
+  });
+  ui.len.addEventListener('input', () => {
+    settings.flashMs = Number(ui.len.value);
+    ui.lenOut.textContent = settings.flashMs + ' ms';
+    setFill(ui.len);
+    saveSettings();
+  });
+  ui.screen.addEventListener('change', () => {
+    settings.screen = ui.screen.checked;
+    screenAuto = false;
+    ui.flash.classList.toggle('is-on', lightOn && settings.screen);
+    saveSettings();
+  });
+  document.addEventListener('visibilitychange', onVisibility);
+  window.addEventListener('pagehide', () => { if (running || starting) stop(); });
+  document.addEventListener('touchend', () => {
+    if (running && audioCtx && audioCtx.state !== 'running') audioCtx.resume().catch(() => {});
+  }, { passive: true });
+  window.addEventListener('resize', () => { if (!running && frozen.pts.length) drawMeter(frozen.pts, frozen.now, true); });
+
+  /* First paint */
+  ui.screen.checked = settings.screen;
+  renderMode();
+  renderSliders();
+  const first = initialStatus();
+  setStatus(first[0], first[1]);
+  frozen = buildExample();
+  drawMeter(frozen.pts, frozen.now, true);
+})();
+</script>
+</body>
+</html>
