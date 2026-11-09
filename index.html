@@ -91,7 +91,23 @@ button, input { font: inherit; touch-action: manipulation; }
   border-radius: 4px;
   padding: 3px 7px;
 }
+.tags { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.tag-ver { color: var(--amber); border-color: var(--amber-deep); font-family: var(--font-readout); letter-spacing: 0.06em; text-transform: none; }
 .lede { margin: 0; color: var(--ink-dim); max-width: 36ch; }
+.diag {
+  width: 100%;
+  min-height: 14em;
+  margin: 0;
+  padding: 10px;
+  resize: vertical;
+  font-family: var(--font-readout);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink);
+  background: var(--case);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+}
 
 /* The lamp */
 .stage { display: grid; justify-items: center; gap: 20px; padding-block: 14px 0; }
@@ -372,7 +388,7 @@ input[type="range"]:disabled { cursor: default; }
   <header class="top">
     <div class="brand-row">
       <h1 class="brand">Beat <span>Light</span></h1>
-      <span class="tag">Sound-to-light</span>
+      <span class="tags"><span class="tag">Sound-to-light</span><span class="tag tag-ver" id="version">v3</span></span>
     </div>
     <p class="lede">Flashes your iPhone flashlight in time with the music it hears.</p>
   </header>
@@ -438,6 +454,13 @@ input[type="range"]:disabled { cursor: default; }
     <button type="button" class="btn-ghost" id="test" disabled>Test light</button>
   </section>
 
+  <section class="card" aria-labelledby="diagTitle">
+    <h2 class="card-title" id="diagTitle">Not flashing?</h2>
+    <p class="hint">Play music for 10 seconds, then copy the diagnostics and paste them into a message. They hold sound levels only, never audio.</p>
+    <button type="button" class="btn-ghost" id="diagBtn">Copy diagnostics</button>
+    <textarea class="diag" id="diagOut" readonly hidden aria-label="Diagnostics"></textarea>
+  </section>
+
   <section class="tips" aria-labelledby="tipsTitle">
     <h2 class="card-title" id="tipsTitle">Tips</h2>
     <ul>
@@ -461,7 +484,9 @@ input[type="range"]:disabled { cursor: default; }
   const HISTORY_MS = 1000;  // window for the running averages
   const RELEASE_MS = 90;    // how quickly a band's level falls after a hit
   const ONSET_MS = 70;      // a hit must jump up within this time
-  const MIN_GAP_MS = 150;   // closest two beats can be (400 BPM)
+  const MIN_GAP_MS = 150;   // closest two flashes can be (400 BPM)
+  const TICK_MS = 10;       // the beat tracker keeps one onset reading every 10 ms
+  const TRACK_LEN = 600;    // and looks back over the last 6 seconds of them
 
   function createBand() {
     return { env: 0, prevE: 0, floor: 0, hist: [], lastBeat: -1e9, armed: true };
@@ -472,7 +497,7 @@ input[type="range"]:disabled { cursor: default; }
     d.env = Math.max(raw, d.env * Math.exp(-dt / RELEASE_MS));
     const e = d.env;
     // Quietest recent level: drops straight to quiet moments and creeps back up by about 25% a second.
-    d.floor = d.floor > 0 ? Math.min(e, d.floor * (1 + 0.25 * dt / 1000)) : e;
+    d.floor = d.floor > 0 ? Math.min(e, d.floor * (1 + (0.25 * dt) / 1000)) : e;
     const h = d.hist;
     while (h.length && now - h[0].t > HISTORY_MS) h.shift();
     const warm = h.length >= 8;
@@ -501,24 +526,132 @@ input[type="range"]:disabled { cursor: default; }
     return { e, thr, hit };
   }
 
-  function createDetector() {
-    return { bass: createBand(), hi: createBand(), body: { env: 0, floor: 0, levels: [] }, follow: false, lastBeat: -1e9 };
+  // Onset curve from a 1024-point spectrum: how much louder each octave band got since the last
+  // reading, in dB, counting only bands that hold more than room noise.
+  const EDGES = [40, 150, 300, 600, 1200, 2400, 4800, 9600];
+  function makeOnset(binHz, bins) {
+    const nb = EDGES.length - 1;
+    const lo = [], hi = [];
+    for (let b = 0; b < nb; b++) {
+      lo.push(Math.max(1, Math.min(bins - 1, Math.round(EDGES[b] / binHz))));
+      hi.push(Math.max(1, Math.min(bins - 1, Math.round(EDGES[b + 1] / binHz))));
+    }
+    const prev = new Array(nb).fill(null);
+    const floor = new Array(nb).fill(null);
+    return (spec, dt) => {
+      let o = 0;
+      for (let b = 0; b < nb; b++) {
+        let p = 0;
+        for (let k = lo[b]; k < hi[b]; k++) p += Math.pow(10, (spec[k] > -140 ? spec[k] : -140) / 10);
+        const L = 10 * Math.log10(p + 1e-14);
+        floor[b] = floor[b] === null ? L : Math.min(L, floor[b] + (0.5 * dt) / 1000);   // creeps up 0.5 dB a second
+        const weight = Math.max(0, Math.min(1, (L - floor[b] - 3) / 9));
+        if (prev[b] !== null && L > prev[b]) o += (L - prev[b]) * weight;
+        prev[b] = L;
+      }
+      return o;
+    };
   }
 
-  // One analysis step. s.bass is the 40 to 150 Hz level, s.hi the 1 to 4 kHz level, s.body the
-  // 40 Hz to 1.5 kHz level, s.levelDb the smoothed input level in dBFS, and sens runs from 0 to 1.
-  // Big speakers are caught by the deep-bass band. Laptop and phone speakers play almost no deep bass,
-  // so they are caught by the 1 to 4 kHz band, where the snap of kick and snare drums comes through.
-  function detectStep(d, s, now, dt, sens) {
-    const loud = s.levelDb > -52 - 14 * sens;                   // anything quieter counts as a silent room
+  // Beat tracker: finds the song's repeating pulse in the onset curve and predicts the next beats.
+  function createTracker() {
+    return { buf: new Float32Array(TRACK_LEN), n: 0, head: 0, acc: 0, peak: 0, sinceUpdate: 0, period: 500, anchor: null, conf: 0, lastFlash: -1e9 };
+  }
+  function trackerUpdate(tr, now) {
+    const n = tr.n;
+    if (n < 300) return;                                          // needs 3 seconds of music first
+    const x = new Float32Array(n);
+    let mu = 0;
+    for (let i = 0; i < n; i++) { x[i] = tr.buf[(tr.head - n + i + TRACK_LEN) % TRACK_LEN]; mu += x[i]; }
+    mu /= n;
+    let r0 = 0;
+    for (let i = 0; i < n; i++) { x[i] -= mu; r0 += x[i] * x[i]; }
+    if (!(r0 > 1e-9)) { tr.conf = 0; return; }
+    // Tempo: the strongest repeat between 60 and 200 BPM, gently preferring 120.
+    const r = new Float32Array(101);
+    let best = -Infinity, bestLag = 50;
+    for (let l = 30; l <= 100; l++) {
+      let s = 0;
+      for (let i = l; i < n; i++) s += x[i] * x[i - l];
+      r[l] = s / r0;
+      const score = r[l] * Math.exp(-0.5 * Math.pow(Math.log2(l / 50) / 0.6, 2));
+      if (score > best) { best = score; bestLag = l; }
+    }
+    let lag = bestLag;
+    if (bestLag > 30 && bestLag < 100) {
+      const den = r[bestLag - 1] - 2 * r[bestLag] + r[bestLag + 1];
+      if (den < 0) lag += (0.5 * (r[bestLag - 1] - r[bestLag + 1])) / den;
+    }
+    tr.conf = r[bestLag];
+    tr.period = lag * TICK_MS;
+    // Phase: line a comb up with the past beats, the newest counting most.
+    let bestS = -Infinity, bestPhi = 0;
+    for (let phi = 0; phi < lag; phi++) {
+      let s = 0, w = 1;
+      for (let m = 0; ; m++) {
+        const i = n - 1 - phi - Math.round(m * lag);
+        if (i < 1) break;
+        s += w * (x[i] + 0.5 * (x[i - 1] + (i + 1 < n ? x[i + 1] : 0)));
+        w *= 0.85;
+      }
+      if (s > bestS) { bestS = s; bestPhi = phi; }
+    }
+    const est = now - bestPhi * TICK_MS;
+    if (tr.anchor === null) tr.anchor = est;
+    else {
+      let err = (est - tr.anchor) % tr.period;
+      if (err > tr.period / 2) err -= tr.period;
+      if (err < -tr.period / 2) err += tr.period;
+      tr.anchor += 0.3 * err;
+    }
+  }
+
+  function createDetector() {
+    return { bass: createBand(), hi: createBand(), body: { env: 0, floor: 0, levels: [] }, tracker: createTracker(), follow: false, lastBeat: -1e9 };
+  }
+
+  // One analysis step. s.bass is the 40 to 150 Hz level, s.hi the 1 to 4 kHz level, s.body the 40 Hz
+  // to 1.5 kHz level, s.onset the onset-curve value and s.levelDb the smoothed input level in dBFS.
+  // lead is how many ms early to fire, to make up for the light's own delay; sens runs from 0 to 1.
+  // Until the tracker locks on, single hits fire the light: deep bass (big speakers) or the snap of
+  // drums at 1 to 4 kHz (laptop speakers). Once it locks on, the light follows the song's pulse.
+  function detectStep(d, s, now, dt, sens, lead) {
+    const loud = s.levelDb > -72 - 12 * sens;                   // only dead silence is ignored
     const bassOpen = s.bass > 0.012 * Math.pow(1 / 6, sens);     // deep bass only counts when it is clearly there
     const b = bandStep(d.bass, s.bass, now, dt, sens);
     const h = bandStep(d.hi, s.hi, now, dt, sens);
-    let beat = false;
-    if (loud && ((b.hit && bassOpen) || h.hit) && now - d.lastBeat > MIN_GAP_MS) {
-      beat = true;
-      d.lastBeat = now;
+
+    // Feed the tracker one reading per 10 ms, keeping the biggest onset seen in between. When the
+    // browser runs late, the same value fills each missed 10 ms slot so no false rhythm appears.
+    const tr = d.tracker;
+    tr.peak = Math.max(tr.peak, loud ? s.onset : 0);
+    tr.acc += dt;
+    if (tr.acc >= TICK_MS) {
+      const v = tr.peak;
+      while (tr.acc >= TICK_MS) {
+        tr.buf[tr.head] = v;
+        tr.head = (tr.head + 1) % TRACK_LEN;
+        if (tr.n < TRACK_LEN) tr.n++;
+        tr.acc -= TICK_MS;
+        tr.sinceUpdate += TICK_MS;
+      }
+      tr.peak = 0;
     }
+    if (tr.sinceUpdate >= 50) { tr.sinceUpdate = 0; trackerUpdate(tr, now); }
+    const locked = tr.anchor !== null && tr.conf >= 0.3 - 0.15 * sens;
+
+    let beat = false;
+    if (locked) {
+      const P = tr.period, at = now + lead;
+      const g = tr.anchor + Math.round((at - tr.anchor) / P) * P;   // nearest predicted beat
+      if (loud && at >= g && at - g < 0.25 * P && g - tr.lastFlash > 0.5 * P && now - d.lastBeat > MIN_GAP_MS) {
+        tr.lastFlash = g;
+        beat = true;
+      }
+    } else if (loud && ((b.hit && bassOpen) || h.hit) && now - d.lastBeat > MIN_GAP_MS) {
+      beat = true;
+    }
+    if (beat) d.lastBeat = now;
     // Hit strength for the meter: 1 means a band reached its trigger line.
     const strength = Math.max(bassOpen ? b.e / b.thr : 0, h.e / h.thr);
 
@@ -526,7 +659,7 @@ input[type="range"]:disabled { cursor: default; }
     const f = d.body;
     f.env = Math.max(s.body, f.env * Math.exp(-dt / RELEASE_MS));
     const e = f.env;
-    f.floor = f.floor > 0 ? Math.min(e, f.floor * (1 + 0.25 * dt / 1000)) : e;
+    f.floor = f.floor > 0 ? Math.min(e, f.floor * (1 + (0.25 * dt) / 1000)) : e;
     const lv = f.levels;
     while (lv.length && now - lv[0].t > HISTORY_MS) lv.shift();
     let onThr = e * 2;
@@ -543,7 +676,7 @@ input[type="range"]:disabled { cursor: default; }
     if (!d.follow && loud && music && lv.length > 8 && e > onThr) d.follow = true;
     else if (d.follow && (!loud || !music || e < onThr * 0.8)) d.follow = false;
 
-    return { beat, follow: d.follow, strength, body: e / onThr };
+    return { beat, follow: d.follow, strength, body: e / onThr, locked, tempo: locked ? 60000 / tr.period : 0, conf: tr.conf };
   }
   /* detector:end */
 
@@ -556,11 +689,14 @@ input[type="range"]:disabled { cursor: default; }
     meterTitle: $('meterTitle'), meterBand: $('meterBand'), meterKey: $('meterKey'), meterLine: $('meterLine'),
     sens: $('sens'), sensOut: $('sensOut'), len: $('len'), lenOut: $('lenOut'),
     lenField: $('lenField'), lenHint: $('lenHint'), screen: $('screenFlash'),
-    modeBeat: $('modeBeat'), modeFollow: $('modeFollow'), modeHint: $('modeHint')
+    modeBeat: $('modeBeat'), modeFollow: $('modeFollow'), modeHint: $('modeHint'),
+    diagBtn: $('diagBtn'), diagOut: $('diagOut')
   };
 
   const AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
   const VIDEO_BASE = { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } };
+  const VERSION = 'v3';
+  const ANALYSIS_MS = 10;              // the microphone is analysed 100 times a second
   const TRACE_MS = 6000;
   const STORE_KEY = 'beat-light-settings';
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -595,7 +731,9 @@ input[type="range"]:disabled { cursor: default; }
   let runId = 0;
   let stream = null, audioTrack = null, videoTrack = null;
   let audioCtx = null, nodes = [], readers = null;
-  let rafId = 0, lastFrame = 0, lastReadout = 0, manualUntil = 0;
+  let rafId = 0, analyseTimer = 0, lastAnalyse = 0, lastReadout = 0, manualUntil = 0, lastLvl = 0;
+  let beatLocked = false, quietSince = 0, quietShown = false, tickSum = 0, tickCount = 0;
+  const diag = [];                     // the last 10 seconds of levels, for the diagnostics
   let wakeLock = null;
   let lightOn = false, lightTimer = 0, screenAuto = false;
   let cameraState = 'none';           // torch | no-torch | no-camera | lost
@@ -616,7 +754,10 @@ input[type="range"]:disabled { cursor: default; }
     const what = settings.mode === 'beat' ? 'flashes on each beat' : 'follows the bass';
     switch (cameraState) {
       case 'torch':
-        return ['Listening. The flashlight ' + what + '.', 'ok'];
+        if (settings.mode !== 'beat') return ['Listening. The flashlight follows the bass.', 'ok'];
+        return beatLocked
+          ? ['Locked on to the beat. The flashlight flashes on each one.', 'ok']
+          : ['Listening for a steady beat. Until it locks on, loud hits flash the light.', 'ok'];
       case 'no-torch':
         return ['Listening. This browser cannot switch the flashlight, so the screen ' + what + ' instead. Flashlight control needs iOS 17.4 or later.', 'warn'];
       case 'lost':
@@ -817,8 +958,11 @@ input[type="range"]:disabled { cursor: default; }
     full.fftSize = 1024; full.smoothingTimeConstant = 0;
     src.connect(full); full.connect(silent);
     nodes.push(full);
+    const spectrum = new Float32Array(full.frequencyBinCount);
+    const onset = makeOnset(audioCtx.sampleRate / full.fftSize, full.frequencyBinCount);
     readers = {
       full: makeReader(full),
+      onset: (dt) => { full.getFloatFrequencyData(spectrum); return onset(spectrum, dt); },
       bass: bandChain(src, silent, 40, 150, 2048),
       hi: bandChain(src, silent, 1000, 4000, 1024),
       body: bandChain(src, silent, 40, 1500, 1024)
@@ -910,10 +1054,16 @@ input[type="range"]:disabled { cursor: default; }
     det = createDetector();
     tempoBeats = [];
     trace.length = 0;
+    diag.length = 0;
     meterReset = true;
     levelDb = -200;
     silentSince = 0;
     silenceShown = false;
+    quietSince = 0;
+    quietShown = false;
+    beatLocked = false;
+    tickSum = 0;
+    tickCount = 0;
     manualUntil = 0;
     lastReadout = 0;
 
@@ -926,8 +1076,9 @@ input[type="range"]:disabled { cursor: default; }
     ui.exampleBadge.hidden = true;
     showRunningStatus();
     requestWakeLock();
-    lastFrame = performance.now();
-    rafId = requestAnimationFrame(frame);
+    lastAnalyse = performance.now();
+    analyseTimer = setInterval(analyse, ANALYSIS_MS);
+    rafId = requestAnimationFrame(draw);
     if (torch.ok) {
       // A short blink confirms the flashlight is under control.
       manualUntil = performance.now() + 250;
@@ -937,9 +1088,10 @@ input[type="range"]:disabled { cursor: default; }
 
   function stop(message, tone) {
     runId++;
-    if (running && trace.length) frozen = { pts: trace.slice(), now: lastFrame };
+    if (running && trace.length) frozen = { pts: trace.slice(), now: lastAnalyse };
     running = false;
     starting = false;
+    clearInterval(analyseTimer);
     cancelAnimationFrame(rafId);
     clearTimeout(lightTimer);
     resetTorch();
@@ -966,7 +1118,7 @@ input[type="range"]:disabled { cursor: default; }
 
   function onAudioEnded() { if (running) stop('The microphone stopped. Tap Start listening to try again.', 'warn'); }
   function onAudioMute() { if (running) setStatus('Another app is using the microphone. Listening resumes when it is free.', 'warn'); }
-  function onAudioUnmute() { if (running && !silenceShown) showRunningStatus(); }
+  function onAudioUnmute() { if (running && !silenceShown && !quietShown) showRunningStatus(); }
 
   /* The loop */
   function noteBeat(t) {
@@ -987,11 +1139,14 @@ input[type="range"]:disabled { cursor: default; }
   }
   function fmtDb(n) { return n < 0 ? '−' + Math.abs(n) : String(n); }
 
-  function frame(now) {
-    if (!running) return;
-    rafId = requestAnimationFrame(frame);
-    const dt = Math.min(100, Math.max(1, now - lastFrame));
-    lastFrame = now;
+  // Runs 100 times a second on a timer, so the beat tracking does not depend on the screen's refresh rate.
+  function analyse() {
+    if (!running || !readers) return;
+    const now = performance.now();
+    const dt = Math.min(100, Math.max(1, now - lastAnalyse));
+    lastAnalyse = now;
+    tickSum += dt;
+    tickCount++;
 
     // Input level in dBFS: rises quickly and falls slowly, like a VU meter.
     const full = readers.full();
@@ -999,9 +1154,10 @@ input[type="range"]:disabled { cursor: default; }
     levelDb = levelDb < -150 ? db : levelDb + (db - levelDb) * Math.min(1, dt / (db > levelDb ? 120 : 700));
     if (full < 1e-6) { if (!silentSince) silentSince = now; } else silentSince = 0;
 
-    const s = { bass: readers.bass(), hi: readers.hi(), body: readers.body(), levelDb };
-    const r = detectStep(det, s, now, dt, settings.sens / 100);
-    if (r.beat) noteBeat(now);
+    const s = { bass: readers.bass(), hi: readers.hi(), body: readers.body(), onset: readers.onset(dt), levelDb };
+    const lead = torch.ok && torch.lag ? Math.min(120, torch.lag) : 0;
+    const r = detectStep(det, s, now, dt, settings.sens / 100, lead);
+    if (r.beat && !r.locked) noteBeat(now);
 
     if (now >= manualUntil) {
       if (settings.mode === 'beat') { if (r.beat) pulse(settings.flashMs); }
@@ -1010,25 +1166,94 @@ input[type="range"]:disabled { cursor: default; }
 
     trace.push({ t: now, v: r.strength, f: r.body, beat: r.beat });
     while (trace.length && now - trace[0].t > TRACE_MS) trace.shift();
-    drawMeter(trace, now, false);
-    const shown = settings.mode === 'beat' ? r.strength : r.body;
-    ui.lamp.style.setProperty('--lvl', Math.min(1, shown / Math.max(meterScale, 1e-6)).toFixed(3));
+    lastLvl = settings.mode === 'beat' ? r.strength : r.body;
+    diag.push({ t: now, lv: levelDb, b: s.bass, h: s.hi, o: s.onset, st: r.strength, lk: r.locked, c: r.conf, bt: r.beat, tp: r.tempo });
+    while (diag.length && now - diag[0].t > 10000) diag.shift();
+
+    if (r.locked !== beatLocked) {
+      beatLocked = r.locked;
+      if (beatLocked) tempoBeats = [];
+      if (!silenceShown && !quietShown) showRunningStatus();
+    }
 
     if (now - lastReadout > 200) {
       lastReadout = now;
       ui.input.textContent = levelDb > -120 ? fmtDb(Math.round(levelDb)) : '--';
       ui.delay.textContent = torch.ok && torch.lag ? String(Math.round(torch.lag)) : '--';
-      if (tempoBeats.length && now - det.lastBeat > 4000) { tempoBeats = []; ui.tempo.textContent = '--'; }
+      if (beatLocked) ui.tempo.textContent = String(Math.round(r.tempo));
+      else if (tempoBeats.length && now - det.lastBeat > 4000) { tempoBeats = []; ui.tempo.textContent = '--'; }
+      // Quiet music: no beat for a while and a low input level.
+      const quiet = levelDb < -62 && !beatLocked && now - det.lastBeat > 4000;
+      if (quiet) { if (!quietSince) quietSince = now; } else quietSince = 0;
       if (silentSince && now - silentSince > 4000) {
         if (!silenceShown) {
           silenceShown = true;
           setStatus('The microphone is sending silence. Tap Stop, then Start listening again.', 'warn');
         }
-      } else if (silenceShown) {
+      } else if (quietSince && now - quietSince > 4000) {
         silenceShown = false;
+        quietShown = true;
+        setStatus('The music sounds very quiet to the microphone (Input ' + fmtDb(Math.round(levelDb)) + ' dB). Move the phone closer to the speaker or turn the volume up.', 'warn');
+      } else if (silenceShown || quietShown) {
+        silenceShown = false;
+        quietShown = false;
         showRunningStatus();
       }
     }
+  }
+
+  function draw() {
+    if (!running) return;
+    rafId = requestAnimationFrame(draw);
+    drawMeter(trace, performance.now(), false);
+    ui.lamp.style.setProperty('--lvl', Math.min(1, lastLvl / Math.max(meterScale, 1e-6)).toFixed(3));
+  }
+
+  /* Diagnostics: a plain-text summary of the last 10 seconds, to paste into a message */
+  function diagnosticsText() {
+    const pct = (arr, q) => { const a = arr.slice().sort((x, y) => x - y); return a.length ? a[Math.min(a.length - 1, Math.floor(q * a.length))] : NaN; };
+    const toDb = (x) => 20 * Math.log10(x + 1e-9);
+    const fmt = (n, digits) => (Number.isFinite(n) ? n.toFixed(digits === undefined ? 0 : digits).replace('-', '−') : '--');
+    const ua = navigator.userAgent || '';
+    const osMatch = ua.match(/OS (\d+)_(\d+)(?:_(\d+))? like Mac OS X/);
+    const device = /iPad/.test(ua) ? 'iPad' : /iPhone/.test(ua) ? 'iPhone' : 'not an iPhone';
+    const browser = /CriOS/.test(ua) ? 'Chrome' : /FxiOS/.test(ua) ? 'Firefox' : /EdgiOS/.test(ua) ? 'Edge' : /Safari/.test(ua) ? 'Safari' : 'other browser';
+    const sens = settings.sens / 100;
+    const light = {
+      torch: 'works' + (torch.lag ? ', about ' + Math.round(torch.lag) + ' ms delay' : ''),
+      'no-torch': 'not available in this browser, screen flash used',
+      lost: 'stopped responding, screen flash used',
+      'no-camera': 'camera off, screen flash used',
+      none: 'not started yet'
+    }[cameraState];
+    const lines = [
+      'Beat Light ' + VERSION + ' diagnostics',
+      'Phone: ' + device + (osMatch ? ', iOS ' + osMatch[1] + '.' + osMatch[2] + (osMatch[3] ? '.' + osMatch[3] : '') : '') + ', ' + browser,
+      'Audio: ' + (audioCtx ? audioCtx.sampleRate + ' Hz' : 'not started') + ', a reading every ' + (tickCount ? (tickSum / tickCount).toFixed(1) : '--') + ' ms',
+      'Settings: ' + (settings.mode === 'beat' ? 'On the beat' : 'Follow the bass') + ', sensitivity ' + settings.sens + ', flash ' + settings.flashMs + ' ms, screen flash ' + (settings.screen ? 'on' : 'off'),
+      'Flashlight: ' + light
+    ];
+    if (diag.length < 50) {
+      lines.push('No sound readings yet. Tap Start listening and play music for 10 seconds first.');
+      return lines.join('\n');
+    }
+    const span = (diag[diag.length - 1].t - diag[0].t) / 1000;
+    const lv = diag.map((x) => x.lv), bass = diag.map((x) => toDb(x.b)), hi = diag.map((x) => toDb(x.h));
+    const st = diag.map((x) => x.st), on = diag.map((x) => x.o);
+    const lockedShare = diag.filter((x) => x.lk).length / diag.length;
+    const flashes = diag.filter((x) => x.bt).length;
+    const last = diag[diag.length - 1];
+    lines.push(
+      'Last ' + Math.round(span) + ' s:',
+      '  Input level: median ' + fmt(pct(lv, 0.5)) + ' dB, loudest ' + fmt(pct(lv, 0.99)) + ' dB (silence cutoff ' + fmt(-72 - 12 * sens) + ' dB)',
+      '  Deep bass 40-150 Hz: median ' + fmt(pct(bass, 0.5)) + ' dB, loudest ' + fmt(pct(bass, 0.99)) + ' dB (counts above ' + fmt(toDb(0.012 * Math.pow(1 / 6, sens))) + ' dB)',
+      '  1-4 kHz: median ' + fmt(pct(hi, 0.5)) + ' dB, loudest ' + fmt(pct(hi, 0.99)) + ' dB',
+      '  Hit strength: median ' + fmt(pct(st, 0.5), 2) + ', top 1% ' + fmt(pct(st, 0.99), 2) + ' (1.00 is the trigger line)',
+      '  Onset curve: median ' + fmt(pct(on, 0.5), 1) + ', top 1% ' + fmt(pct(on, 0.99), 1),
+      '  Beat tracker: locked ' + Math.round(100 * lockedShare) + '% of the time, confidence ' + fmt(last.c, 2) + ' (locks at ' + fmt(0.3 - 0.15 * sens, 2) + ')' + (last.lk ? ', ' + Math.round(last.tp) + ' BPM' : ''),
+      '  Flashes: ' + flashes + ' (' + Math.round((flashes / Math.max(span, 1)) * 60) + ' a minute)'
+    );
+    return lines.join('\n');
   }
 
   /* Sound-to-light trace */
@@ -1117,7 +1342,8 @@ input[type="range"]:disabled { cursor: default; }
       const kick = ph < 320 ? 0.05 * Math.exp(-ph / 55) : 0;
       const bass = 0.012 + 0.005 * Math.sin(t / 310) + 0.004 * rand() + kick;
       const hi = 0.004 + 0.002 * rand() + (ph < 120 ? 0.02 * Math.exp(-ph / 30) : 0);
-      const r = detectStep(d, { bass, hi, body: bass * 1.4 + hi, levelDb: -30 }, t, step, 0.6);
+      const onset = (ph < step ? 9 : 0) + 0.6 * rand();
+      const r = detectStep(d, { bass, hi, body: bass * 1.4 + hi, onset, levelDb: -30 }, t, step, 0.6, 0);
       pts.push({ t, v: r.strength, f: r.body, beat: r.beat });
     }
     return { pts, now: TRACE_MS };
@@ -1192,6 +1418,26 @@ input[type="range"]:disabled { cursor: default; }
     screenAuto = false;
     ui.flash.classList.toggle('is-on', lightOn && settings.screen);
     saveSettings();
+  });
+  ui.diagBtn.addEventListener('click', () => {
+    const text = diagnosticsText();
+    ui.diagOut.value = text;
+    ui.diagOut.hidden = false;
+    const copied = () => {
+      ui.diagBtn.textContent = 'Copied';
+      setTimeout(() => { ui.diagBtn.textContent = 'Copy diagnostics'; }, 2000);
+    };
+    const manual = () => {
+      ui.diagOut.focus();
+      ui.diagOut.select();
+      ui.diagBtn.textContent = 'Select the text and copy it';
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(copied, manual);
+      else manual();
+    } catch (e) {
+      manual();
+    }
   });
   document.addEventListener('visibilitychange', onVisibility);
   window.addEventListener('pagehide', () => { if (running || starting) stop(); });
